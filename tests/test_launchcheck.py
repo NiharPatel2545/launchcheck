@@ -152,3 +152,11 @@ def test_web_page_answers_only_its_own_page():
     assert c.post("/api/scan", json={"url": "x"}, headers={"Origin": "https://evil.example"}).status_code == 403
     assert c.post("/api/scan", json={"url": "x"}).status_code == 403                                         # no Origin at all
     assert TestClient(app, base_url="http://rebind.example").get("/").status_code == 403                     # DNS rebinding
+
+
+def test_css_variable_is_not_an_openai_key():
+    from launchcheck.secrets import scan_text
+    css = 'x=get("--sk-dotnav-animation-stagger-duration");y=get("--sk-dotnav-animation-collapse-duration")'
+    assert scan_text(css, "a.js", True) == []
+    key = "sk-" + "proj-" + "Ab3" * 15
+    assert [f.id for f in scan_text(f'k="{key}"', "a.js", True)] == ["secret-openai-key"]

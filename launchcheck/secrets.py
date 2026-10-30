@@ -10,7 +10,8 @@ from launchcheck.findings import Finding, mask
 # (id, label, regex, severity). Publishable/public keys (Stripe pk_, Supabase anon) are handled separately: they are meant to be public.
 PATTERNS = [
     ("anthropic-key", "Anthropic API key", r"sk-ant-[A-Za-z0-9_\-]{20,}", "high"),
-    ("openai-key", "OpenAI API key", r"sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{32,}", "high"),
+    # not after a word char or '-' (CSS variables like --sk-nav-animation-duration), and random keys always have a digit and a capital
+    ("openai-key", "OpenAI API key", r"(?<![\w-])sk-(?:proj-|svcacct-|admin-)?(?=[\w-]*\d)(?=[\w-]*[A-Z])[A-Za-z0-9_\-]{32,}", "high"),
     ("aws-key", "AWS access key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", "high"),
     ("stripe-secret", "Stripe secret key", r"\b(?:sk|rk)_live_[0-9a-zA-Z]{20,}", "high"),
     ("github-token", "GitHub token", r"\bgh[pousr]_[A-Za-z0-9]{36,}\b", "high"),

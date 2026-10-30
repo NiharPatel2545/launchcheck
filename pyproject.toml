@@ -3,7 +3,7 @@ name = "launchcheck"
 version = "0.1.0"
 description = "Passive security check for websites and projects built fast: plain-English findings and fixes."
 requires-python = ">=3.10"
-dependencies = ["requests>=2.31", "fastapi>=0.110", "uvicorn>=0.29"]
+dependencies = ["requests>=2.31", "fastapi>=0.110", "uvicorn>=0.29", "reportlab>=4.0"]
 
 [project.scripts]
 launchcheck = "launchcheck.cli:main"

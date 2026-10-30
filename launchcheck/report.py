@@ -22,7 +22,7 @@ main{max-width:860px;margin:0 auto;padding:32px 16px 64px}h1{font-size:28px;marg
 .f{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--c);border-radius:12px;padding:16px 18px;margin:12px 0}
 .f h3{margin:0 0 6px;font-size:17px}.tag{display:inline-block;font-size:12px;font-weight:700;color:var(--c);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
 .f p{margin:6px 0}.where{font-size:13px;color:var(--mut);word-break:break-all}
-pre{white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:13px;margin:6px 0 0}
+pre{white-space:pre-wrap;background:var(--bg);border-radius:6px;padding:12px 14px;font:14px/1.5 inherit;font-family:inherit;margin:6px 0 0}
 .ok{color:var(--ok);font-weight:600}footer{margin-top:40px;font-size:13px;color:var(--mut)}
 """
 

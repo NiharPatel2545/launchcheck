@@ -47,7 +47,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m launchcheck --repo C:\path\to\project
 ```
 
-Exit code is 1 when there is at least one "fix now" finding, so it can gate a CI pipeline.
+Exit code is 1 when there is at least one "fix now" finding, so it can gate a CI pipeline. Add `--pdf report.pdf` for a PDF copy.
 
 ### Web page
 
@@ -55,7 +55,7 @@ Exit code is 1 when there is at least one "fix now" finding, so it can gate a CI
 .\.venv\Scripts\python.exe -m launchcheck serve
 ```
 
-Open http://127.0.0.1:8710, type a website and/or a project folder, press **Run the check**. The report opens on the page.
+Open http://127.0.0.1:8710, paste a website (and optionally a project folder) and press **Check site**. The checklist fills in live, the findings appear below with a fix for each, and **Download PDF** saves the report.
 The server listens on this computer only and answers only its own page (other websites open in your browser cannot drive it).
 
 ## Tests

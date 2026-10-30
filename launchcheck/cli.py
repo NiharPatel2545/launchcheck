@@ -23,6 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--repo", help="local project folder to check (secrets, .env files, vulnerable dependencies)")
     ap.add_argument("--out", default="launchcheck-report.html", help="HTML report path")
     ap.add_argument("--json", help="also write the results as JSON")
+    ap.add_argument("--pdf", help="also write the report as a PDF")
     a = ap.parse_args(argv)
     if not a.url and not a.repo:
         ap.error("give a URL, --repo, or both")
@@ -38,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     Path(a.out).write_text(report.to_html(data), encoding="utf-8")
     if a.json:
         Path(a.json).write_text(report.to_json(data), encoding="utf-8")
+    if a.pdf:
+        from launchcheck.pdf import build_pdf
+        Path(a.pdf).write_bytes(build_pdf(data))
     c = data["counts"]
     print(f"Score {data['score']}/100 (grade {data['grade']}): {c['high']} fix now, {c['medium']} fix soon, {c['low']} good to fix, {c['info']} notes")
     for f in sort_findings(findings):

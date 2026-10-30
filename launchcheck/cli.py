@@ -12,6 +12,12 @@ from launchcheck.site import check_site
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["serve"]:                                  # launchcheck serve [--port 8710]: the local web page
+        from launchcheck.web import serve
+        port = int(argv[argv.index("--port") + 1]) if "--port" in argv else 8710
+        serve(port)
+        return 0
     ap = argparse.ArgumentParser(prog="launchcheck", description="Passive security check of a website and/or a project folder.")
     ap.add_argument("url", nargs="?", help="website to check, e.g. https://example.com")
     ap.add_argument("--repo", help="local project folder to check (secrets, .env files, vulnerable dependencies)")

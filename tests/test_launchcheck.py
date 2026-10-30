@@ -140,3 +140,15 @@ def test_report_renders(bad_site):
     html = report.to_html(data)
     assert "Fix now" in html and str(data["score"]) in html and ANT not in html
     assert json.loads(report.to_json(data))["grade"] in "ABCDF"
+
+
+def test_web_page_answers_only_its_own_page():
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from launchcheck.web import app
+    c = TestClient(app, base_url="http://127.0.0.1:8710")
+    assert c.get("/").status_code == 200
+    assert c.post("/api/scan", json={}, headers={"Origin": "http://127.0.0.1:8710"}).status_code == 422      # own page: reaches validation
+    assert c.post("/api/scan", json={"url": "x"}, headers={"Origin": "https://evil.example"}).status_code == 403
+    assert c.post("/api/scan", json={"url": "x"}).status_code == 403                                         # no Origin at all
+    assert TestClient(app, base_url="http://rebind.example").get("/").status_code == 403                     # DNS rebinding

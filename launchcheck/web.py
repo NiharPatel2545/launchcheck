@@ -88,6 +88,12 @@ hist()
 
 
 def serve(port: int = 8710) -> None:
+    import socket
     import uvicorn
+    with socket.socket() as probe:                     # say so plainly if something already uses the port
+        if probe.connect_ex(("127.0.0.1", port)) == 0:
+            print(f"Port {port} is already in use: launchcheck may already be running at http://127.0.0.1:{port}. "
+                  f"Close the other window, or pick another port with --port.")
+            return
     print(f"launchcheck is running: open http://127.0.0.1:{port}  (Ctrl+C to stop)")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

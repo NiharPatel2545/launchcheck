@@ -7,6 +7,9 @@ Added 30 Oct 2026, before the new checks ran:
    the browser; in the repo: yarn.lock dependency, SQL built from input, open Firebase rules, Supabase table without RLS, risky
    GitHub workflow, root Docker image, secret in a public env variable; with deep checks: exposed .git and .env, folder listing,
    open redirect.
+6. Added 30 Oct 2026 (second round), before running: missing isolation headers on the bad site, a secret found only on a
+   second page reached through a link, a dangling CNAME to an unclaimed GitHub Pages site, and MTA-STS missing on a domain
+   that receives mail.
 5. The safe versions are not flagged: parameterised SQL, escaped innerHTML, test files, and a single-page app that answers
    every address with its home page produces no deep-check findings.
 Fake keys are assembled at runtime so this file itself never contains a key-shaped string.
@@ -40,13 +43,16 @@ BAD_JS = (f'const a="{ANT}";const b="{AWS}";const svc="{jwt("service_role")}";co
 GOOD_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'",
     "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "strict-origin-when-cross-origin",
-    "Permissions-Policy": "camera=(), microphone=()",
+    "Permissions-Policy": "camera=(), microphone=()", "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
 }
 
 
 GOOD_PAGE = ('<html><head><script src="/app.js"></script><script src="https://cdn.jsdelivr.net/npm/vue@3.4.0/dist/vue.js" '
              'integrity="sha384-abc" crossorigin="anonymous"></script></head><body><form action="/login"><input type="password"></form></body></html>')
-BAD_PAGE = ('<html><head><script src="/app.js"></script><script src="https://cdn.jsdelivr.net/npm/jquery@3.4.1/dist/jquery.min.js"></script>'
+GH = "ghp" + "_" + "A1b2C3d4" * 4 + "Zz9Y"
+ABOUT = f'<html><body><p>about us</p><script>const t="{GH}"</script></body></html>'
+BAD_PAGE = ('<html><head><script src="/app.js"></script><a href="/about">About</a><a href="/logout">Log out</a><script src="https://cdn.jsdelivr.net/npm/jquery@3.4.1/dist/jquery.min.js"></script>'
             '</head><body><form action="http://login.example/x"><input type="password"></form></body></html>')
 BAD_FILES = {"/.git/HEAD": "ref: refs/heads/main\n", "/.env": "DATABASE_PASSWORD=hunter2\n",
              "/uploads/": "<html><title>Index of /uploads</title></html>"}
@@ -63,6 +69,10 @@ def serve(good: bool):
             if not good and self.path in BAD_FILES:
                 body = BAD_FILES[self.path].encode()
                 self.send_response(200); self.send_header("Content-Type", "text/plain"); self.send_header("Content-Length", str(len(body)))
+                self.end_headers(); self.wfile.write(body); return
+            if not good and self.path == "/about":                      # reached only by following a link
+                body = ABOUT.encode()
+                self.send_response(200); self.send_header("Content-Type", "text/html"); self.send_header("Content-Length", str(len(body)))
                 self.end_headers(); self.wfile.write(body); return
             if self.path == "/app.js":
                 body, ctype = b'import { k } from "./shared/keys.js"; console.log(k)', "application/javascript"
@@ -111,12 +121,15 @@ def test_vulnerable_site_finds_every_planted_problem(bad_site):
     planted = {"csp-missing", "framing-allowed", "nosniff-missing", "referrer-policy-missing", "permissions-policy-missing",
                "version-disclosure", "cookie-no-httponly", "cookie-no-samesite", "cors-reflects-origin",
                "secret-anthropic-key", "secret-aws-key", "secret-supabase-service", "supabase-anon",
-               "sri-missing", "vulnerable-library", "form-insecure", "internal-address", "llm-from-browser"}
+               "sri-missing", "vulnerable-library", "form-insecure", "internal-address", "llm-from-browser",
+               "coop-missing", "secret-github-token"}
     assert planted <= ids, planted - ids
     assert next(f for f in findings if f.id == "cors-reflects-origin").severity == "high"
     dump = json.dumps([f.to_dict() for f in findings])
     assert ANT not in dump and AWS not in dump and jwt("service_role") not in dump       # secrets only ever masked
     assert info["scripts_scanned"] == 2
+    assert info["pages_scanned"] == 2                                     # home + /about; /logout is never followed
+    assert next(f for f in findings if f.id == "secret-github-token").where.endswith("/about")
     assert score(findings) < 40
 
 
@@ -239,8 +252,29 @@ def test_email_and_tls_rules():
     bare = lambda name, rtype: ([], False)
     assert {f.id for f in check_domain("www.example.com", bare)} == {"email-no-spf", "email-no-dmarc", "dns-no-caa", "dns-no-dnssec"}
     good = {("example.com", "TXT"): ["v=spf1 include:_spf.google.com -all"], ("example.com", "MX"): ["1 smtp.google.com."],
-            ("_dmarc.example.com", "TXT"): ["v=DMARC1; p=reject"], ("example.com", "CAA"): ['0 issue "letsencrypt.org"']}
+            ("_dmarc.example.com", "TXT"): ["v=DMARC1; p=reject"], ("example.com", "CAA"): ['0 issue "letsencrypt.org"'],
+            ("_mta-sts.example.com", "TXT"): ["v=STSv1; id=1"]}
     assert check_domain("example.com", lambda n, t: (good.get((n, t), []), True)) == []
     weak = dict(good); weak[("example.com", "TXT")] = ["v=spf1 +all"]; weak[("_dmarc.example.com", "TXT")] = ["v=DMARC1; p=none"]
     assert {f.id for f in check_domain("example.com", lambda n, t: (weak.get((n, t), []), True))} == {"email-weak-spf", "email-dmarc-none"}
+    no_sts = dict(good); del no_sts[("_mta-sts.example.com", "TXT")]
+    assert {f.id for f in check_domain("example.com", lambda n, t: (no_sts.get((n, t), []), True))} == {"email-no-mta-sts"}
     assert cert_days_left("Jan 10 00:00:00 2027 GMT", datetime(2027, 1, 1, tzinfo=timezone.utc)) == 9
+
+
+def test_subdomain_takeover():
+    from launchcheck.dnsmail import check_takeover
+
+    def dns(gone):
+        def lookup(name, rtype):
+            if rtype == "CNAME":
+                return (["old-docs.github.io."] if name == "docs.example.com" else []), False
+            if gone:
+                raise LookupError("NXDOMAIN")
+            return ["185.199.108.153"], False
+        return lookup
+    unclaimed = "<h1>404</h1><p>There isn't a GitHub Pages site here.</p>"
+    assert [f.id for f in check_takeover("docs.example.com", unclaimed, dns(False))] == ["subdomain-takeover"]
+    assert [f.id for f in check_takeover("docs.example.com", "", dns(True))] == ["subdomain-takeover"]      # target deleted
+    assert check_takeover("docs.example.com", "<h1>Our docs</h1>", dns(False)) == []                        # still claimed
+    assert check_takeover("www.example.com", unclaimed, dns(False)) == []                                   # no CNAME

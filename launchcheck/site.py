@@ -48,6 +48,7 @@ class _Page(HTMLParser):
         super().__init__()
         self.scripts, self.resources, self.meta_csp = [], [], []
         self.sri, self.forms, self.passwords = [], [], 0       # (src, has integrity) for scripts and stylesheets; form actions
+        self.links = []
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -58,6 +59,8 @@ class _Page(HTMLParser):
             self.sri.append((a["href"], bool(a.get("integrity"))))
         if tag == "form":
             self.forms.append(a.get("action") or "")
+        if tag == "a" and a.get("href"):
+            self.links.append(a["href"])
         if tag == "input" and (a.get("type") or "").lower() == "password":
             self.passwords += 1
         if tag in ("script", "img", "iframe", "audio", "video", "source") and a.get("src"):
@@ -201,7 +204,67 @@ def check_page(final: str, html: str, page: _Page, bodies: list[str]) -> list[Fi
     return out
 
 
-def check_site(url: str, session: requests.Session | None = None, query=None, deep: bool = False) -> tuple[list[Finding], dict]:
+def _cookie_findings(resp, https: bool, where: str) -> list[Finding]:
+    out = []
+    for c in _set_cookies(resp):
+        name = c.split("=", 1)[0].strip()
+        low = c.lower()
+        flags = [x.strip() for x in low.split(";")]
+        sensitive = bool(re.search(r"sess|auth|token|sid|jwt|login", name, re.I))
+        if https and "secure" not in flags:
+            out.append(Finding("cookie-no-secure", f"Cookie '{name}' is missing Secure", "medium" if sensitive else "low",
+                               "The cookie can be sent over plain HTTP and read on the way.", "Set the Secure flag on the cookie.", where))
+        if sensitive and "httponly" not in low:
+            out.append(Finding("cookie-no-httponly", f"Cookie '{name}' is missing HttpOnly", "medium",
+                               "Any injected script can read this login/session cookie and take over the account.",
+                               "Set the HttpOnly flag on session and auth cookies.", where))
+        if "samesite" not in low:
+            out.append(Finding("cookie-no-samesite", f"Cookie '{name}' has no SameSite", "low",
+                               "Other sites can make requests that carry this cookie (cross-site request forgery).",
+                               "Set SameSite=Lax (or Strict) on the cookie.", where))
+        if sensitive and https and not name.startswith(("__Host-", "__Secure-")):
+            out.append(Finding("cookie-no-prefix", f"Session cookie '{name}' has no __Host- prefix", "info",
+                               "The __Host- prefix makes browsers refuse the cookie unless it is Secure, set by your own host and "
+                               "path=/, so a subdomain or plain-HTTP page can't overwrite the session (cookie tossing).",
+                               f"Rename it __Host-{name} and set it with Secure; Path=/ and no Domain attribute.", where))
+    return out
+
+
+def _other_pages(s, final: str, page: _Page, limit: int) -> tuple[list[Finding], int]:
+    """A few more pages of the same site, found by following its own links as a visitor would: secrets, forms, cookies and
+    mixed content on each."""
+    host, https = urlparse(final).hostname, urlparse(final).scheme == "https"
+    seen, out, n = {final.split("#")[0].rstrip("/")}, [], 0
+    for href in page.links:
+        full = urljoin(final, href).split("#")[0]
+        key = full.rstrip("/")
+        if n >= limit or key in seen or urlparse(full).hostname != host or urlparse(full).scheme not in ("http", "https"):
+            continue
+        if re.search(r"\.(?:pdf|zip|png|jpe?g|gif|svg|webp|mp4|mp3|ico|xml|txt|json)$|logout|signout|sign-out|log-out", full, re.I):
+            continue                                   # files and anything that would end a session
+        seen.add(key)
+        try:
+            r = _get(s, full, allow_redirects=True)
+        except requests.RequestException:
+            continue
+        if "html" not in r.headers.get("Content-Type", "") or urlparse(r.url).hostname != host:
+            continue
+        n += 1
+        sub = _Page()
+        try:
+            sub.feed(r.text)
+        except Exception:
+            pass
+        out += scan_text(r.text, r.url, public=True) + check_page(r.url, r.text, sub, []) + _cookie_findings(r, https, r.url)
+        if https:
+            out += [Finding("mixed-content", f"Page loads a {tag} over plain HTTP", "medium" if tag in ("script", "stylesheet", "iframe") else "low",
+                            "Browsers block or warn on insecure content, and an insecure script can be swapped on the way.",
+                            "Load it over https:// (or host it yourself).", r.url, src) for tag, src in sub.resources if src.startswith("http://")]
+    return out, n
+
+
+def check_site(url: str, session: requests.Session | None = None, query=None, deep: bool = False,
+               pages: int = 8) -> tuple[list[Finding], dict]:
     s = session or requests.Session()
     out: list[Finding] = []
     info: dict = {"url": url}
@@ -249,6 +312,12 @@ def check_site(url: str, session: requests.Session | None = None, query=None, de
                 out.append(Finding("hsts-short", "Strict-Transport-Security max-age is short", "low",
                                    "A short HSTS lifetime gives less protection between visits.", "Use max-age=31536000 (one year).",
                                    final, hsts))
+            elif not ("includesubdomains" in hsts.lower() and "preload" in hsts.lower() and int(m.group(1)) >= 31536000):
+                out.append(Finding("hsts-not-preload-ready", "HSTS is not ready for the browser preload list", "info",
+                                   "Browsers ship a built-in list of HTTPS-only sites; on it, even a visitor's very first request can't be "
+                                   "downgraded to plain HTTP.",
+                                   "Once every subdomain serves HTTPS, use Strict-Transport-Security: max-age=31536000; includeSubDomains; "
+                                   "preload and submit the domain at https://hstspreload.org.", final, hsts))
 
     # headers
     policies = ([h["content-security-policy"]] if "content-security-policy" in h else []) + page.meta_csp
@@ -270,6 +339,21 @@ def check_site(url: str, session: requests.Session | None = None, query=None, de
         out.append(Finding("permissions-policy-missing", "No Permissions-Policy", "low",
                            "Embedded or injected code can ask for the camera, microphone or location.",
                            "Add a Permissions-Policy that turns off what you do not use, e.g. camera=(), microphone=(), geolocation=()", final))
+    if "cross-origin-opener-policy" not in h:
+        out.append(Finding("coop-missing", "No Cross-Origin-Opener-Policy", "low",
+                           "Without it, a page you open in a popup or new tab (or one that opens yours) keeps a handle on your window, "
+                           "which enables cross-window attacks and data leaks between sites (XS-Leaks).",
+                           "Add: Cross-Origin-Opener-Policy: same-origin (or same-origin-allow-popups if you use OAuth or payment popups).",
+                           final))
+    if "cross-origin-resource-policy" not in h:
+        out.append(Finding("corp-missing", "No Cross-Origin-Resource-Policy", "info",
+                           "CORP stops other sites from embedding your responses, which limits Spectre-style side-channel reads.",
+                           "Add: Cross-Origin-Resource-Policy: same-site (or same-origin).", final))
+    if "cross-origin-embedder-policy" not in h:
+        out.append(Finding("coep-missing", "No Cross-Origin-Embedder-Policy", "info",
+                           "COEP, with COOP, makes the page cross-origin isolated. Only needed if you use features like "
+                           "SharedArrayBuffer; it can break third-party embeds, so add it only with testing.",
+                           "Add: Cross-Origin-Embedder-Policy: require-corp (or credentialless), and test every embed.", final))
     for name in ("server", "x-powered-by"):
         v = h.get(name, "")
         if re.search(r"\d+\.\d+", v):
@@ -278,21 +362,7 @@ def check_site(url: str, session: requests.Session | None = None, query=None, de
                                f"Remove or shorten the {name} header (Express: app.disable('x-powered-by')).", final, f"{name}: {v}"))
 
     # cookies
-    for c in _set_cookies(r):
-        name = c.split("=", 1)[0].strip()
-        low = c.lower()
-        sensitive = bool(re.search(r"sess|auth|token|sid|jwt|login", name, re.I))
-        if https and "secure" not in [p.strip() for p in low.split(";")]:
-            out.append(Finding("cookie-no-secure", f"Cookie '{name}' is missing Secure", "medium" if sensitive else "low",
-                               "The cookie can be sent over plain HTTP and read on the way.", "Set the Secure flag on the cookie.", final))
-        if sensitive and "httponly" not in low:
-            out.append(Finding("cookie-no-httponly", f"Cookie '{name}' is missing HttpOnly", "medium",
-                               "Any injected script can read this login/session cookie and take over the account.",
-                               "Set the HttpOnly flag on session and auth cookies.", final))
-        if "samesite" not in low:
-            out.append(Finding("cookie-no-samesite", f"Cookie '{name}' has no SameSite", "low",
-                               "Other sites can make requests that carry this cookie (cross-site request forgery).",
-                               "Set SameSite=Lax (or Strict) on the cookie.", final))
+    out += _cookie_findings(r, https, final)
 
     # CORS: one request with an origin the site cannot know
     try:
@@ -350,15 +420,21 @@ def check_site(url: str, session: requests.Session | None = None, query=None, de
     out += check_page(final, html, page, bodies)
     out += check_libraries([urljoin(final, x) for x in page.scripts], bodies, final, query)
     out += _security_txt(s, final)
+    more, info["pages_scanned"] = _other_pages(s, final, page, pages)
+    info["pages_scanned"] += 1
+    seen = {(f.id, f.title, f.evidence) for f in out}
+    for f in more:                                 # the same problem on every page is reported once, on the first page
+        if (f.id, f.title, f.evidence) not in seen:
+            seen.add((f.id, f.title, f.evidence)); out.append(f)
     if deep:                                       # only on a site the user has proved is theirs
         from launchcheck.verified import check_verified, how_to_verify, is_verified
         verified = is_verified(final, s)
         info["verified_owner"] = verified
         out += check_verified(final, s) if verified else [how_to_verify(final)]
     if https and not _local(host or ""):
-        from launchcheck.dnsmail import check_domain
+        from launchcheck.dnsmail import check_domain, check_takeover
         from launchcheck.tls import check_tls
-        out += check_tls(host, u.port or 443) + check_domain(host)
+        out += check_tls(host, u.port or 443) + check_domain(host) + check_takeover(host, html)
     return out, info
 
 

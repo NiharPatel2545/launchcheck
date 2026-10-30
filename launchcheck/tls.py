@@ -49,6 +49,19 @@ def _old_tls_accepted(host: str, port: int) -> str | None:
     return None
 
 
+def _static_rsa_accepted(host: str, port: int) -> bool:
+    """Does the server agree to TLS 1.2 with only plain-RSA key exchange (no forward secrecy) on offer?"""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    try:
+        ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+        ctx.set_ciphers("kRSA:@SECLEVEL=0")
+        _handshake(host, port, ctx)
+        return True
+    except (ssl.SSLError, OSError, ValueError):
+        return False
+
+
 def check_tls(host: str, port: int = 443) -> list[Finding]:
     where = f"{host}:{port}"
     try:
@@ -66,7 +79,13 @@ def check_tls(host: str, port: int = 443) -> list[Finding]:
                         "Renew or reissue the certificate for this exact name (Let's Encrypt is free; most hosts do it automatically) and "
                         "serve the full chain.", where, reason)]
     except (OSError, ssl.SSLError):
-        old = _old_tls_accepted(host, port)       # a server that speaks only old TLS fails the modern handshake
+        # a server offering only old TLS, or only ciphers without forward secrecy, fails the modern handshake
+        if _static_rsa_accepted(host, port):
+            return [Finding("tls-no-forward-secrecy", "Only ciphers without forward secrecy are offered", "medium",
+                            "Current browsers and clients increasingly refuse these, and anyone who records traffic and later gets "
+                            "the server's private key can decrypt all of it.",
+                            "Enable ECDHE cipher suites and TLS 1.3 at your host or web server.", where)]
+        old = _old_tls_accepted(host, port)
         if old:
             return [Finding("tls-old-version", f"The site only offers old {old}", "high",
                             f"Current browsers refuse {old}, so most visitors can't open the site at all, and it has known weaknesses.",
@@ -78,6 +97,12 @@ def check_tls(host: str, port: int = 443) -> list[Finding]:
         out.append(Finding("tls-cert-expiring", f"The certificate expires in {days} days", "medium" if days >= 3 else "high",
                            "When it lapses every visitor gets a security warning.",
                            "Renew it now and turn on automatic renewal.", where, cert["notAfter"]))
+    if _static_rsa_accepted(host, port):
+        out.append(Finding("tls-no-forward-secrecy", "Ciphers without forward secrecy are still accepted", "low",
+                           "With plain-RSA key exchange, anyone who records your traffic today and later gets the server's private "
+                           "key can decrypt all of it. Modern ciphers (ECDHE) prevent that.",
+                           "Turn off the TLS_RSA_* cipher suites and keep only ECDHE (and TLS 1.3) suites. Cloudflare and most hosts "
+                           "let you pick a 'modern' cipher profile.", where))
     old = _old_tls_accepted(host, port)
     if old:
         out.append(Finding("tls-old-version", f"Old {old} is still switched on", "medium",

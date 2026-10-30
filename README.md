@@ -14,20 +14,25 @@ Report: launchcheck-report.html
 
 ## What it checks
 
-**Website** (passive: what a visitor's browser receives, plus public DNS records and ordinary TLS handshakes):
+**Website** (passive: what a visitor's browser receives on the home page and up to 8 pages it links to, plus public DNS
+records and ordinary TLS handshakes; logout links and files are never followed):
 - **Keys shipped to the browser**: about 25 kinds (OpenAI, Anthropic, AWS, Stripe, GitHub, GitLab, Slack, Google OAuth, Hugging Face,
   SendGrid, Twilio, Telegram, database addresses with passwords, private keys, Supabase `service_role` ...). It follows script tags
   and ES module imports through the site's own bundles. Keys are always masked in output.
 - **AI keys**: OpenAI, Anthropic, Google or Groq called straight from browser code (which means the key is in the browser).
-- **Encryption**: certificate valid, for the right name and not about to expire; old TLS 1.0/1.1 still switched on; HTTPS and the
-  http-to-https redirect; HSTS.
-- **Email spoofing**: SPF and DMARC (can anyone send mail as your domain?), CAA, DNSSEC.
+- **Encryption**: certificate valid, for the right name and not about to expire; old TLS 1.0/1.1 still switched on; ciphers
+  without forward secrecy (plain-RSA key exchange); HTTPS and the http-to-https redirect; HSTS and whether it is ready for the
+  browser preload list.
+- **Subdomain takeover**: the address points (CNAME) at a hosting service (GitHub Pages, Heroku, S3, Azure, Netlify, Vercel ...)
+  where the app or bucket no longer exists, so anyone could claim it.
+- **Email spoofing**: SPF and DMARC (can anyone send mail as your domain?), MTA-STS for incoming mail, CAA, DNSSEC.
 - **Content-Security-Policy**: missing, `unsafe-inline` without hashes, `unsafe-eval`, wildcard script sources (header and `<meta>`).
 - **Outside scripts**: old front-end libraries with published vulnerabilities (jQuery, Bootstrap, AngularJS, Lodash, Moment ...,
   from CDN addresses and file banners, checked against [OSV](https://osv.dev)); outside scripts without integrity hashes.
 - **Forms**: login or other forms that send over plain HTTP.
-- **Headers and cookies**: clickjacking, nosniff, Referrer-Policy, Permissions-Policy, version numbers in Server / X-Powered-By;
-  Secure, HttpOnly and SameSite on cookies; CORS that echoes any origin; mixed content.
+- **Headers and cookies**: clickjacking, nosniff, Referrer-Policy, Permissions-Policy, cross-origin isolation (COOP, CORP,
+  COEP), version numbers in Server / X-Powered-By; Secure, HttpOnly, SameSite and the `__Host-` prefix on cookies; CORS that
+  echoes any origin; mixed content.
 - **Leaks**: internal network addresses and linked source maps; whether `security.txt` tells people how to report a problem.
 
 **Deeper checks on a site you own** (`--deep`, or the tick box on the web page): exposed `.git` and `.env` files, database dumps
@@ -64,7 +69,11 @@ Every check has a planted example in the test suite (a deliberately broken demo 
 flagged. On real sites, each new check was run against well-known sites and every finding was confirmed by hand; the false alarms
 that turned up (a CSS variable read as an OpenAI key, a plugin's "requires jQuery 1.3.2" note read as jQuery itself, Google Fonts
 flagged for integrity hashes, a library's example key header in old git history) were fixed and are covered by the rules above.
-TLS checks were confirmed on badssl.com's expired, wrong-name, self-signed, TLS 1.0 and TLS 1.1 test servers.
+TLS checks were confirmed on badssl.com's expired, wrong-name, self-signed, TLS 1.0, TLS 1.1 and static-RSA test servers.
+An independent scanner agrees on the headers: Mozilla's HTTP Observatory gives a site that launchcheck scores in the 90s an A+.
+
+Not covered (legal, but not done yet): certificate key size and Certificate Transparency, DKIM (needs the selector name), and
+anything behind a login. Whether your API stops one user reading another user's data can't be tested passively at all.
 
 ## Install and run (Windows PowerShell)
 

@@ -57,21 +57,30 @@ def index() -> str:
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>launchcheck</title><style>
-:root{--bg:#f7f7f4;--card:#fff;--ink:#16190f;--mut:#5b6155;--line:#e2e4dc;--acc:#2f6f2a;--on:#fff;--bad:#c0392b}
-@media(prefers-color-scheme:dark){:root{--bg:#0f120e;--card:#171b16;--ink:#eef0ea;--mut:#a3aa9c;--line:#2a3027;--acc:#8fd16a;--on:#0f120e;--bad:#ef6f5e}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:980px;margin:0 auto;padding:28px 16px 48px}h1{margin:0;font-size:30px}p.mut{color:var(--mut);margin:4px 0 20px}
-form{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;display:grid;gap:12px}
-label{font-size:14px;color:var(--mut);display:grid;gap:6px}input{font:inherit;padding:12px 14px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+:root{--bg:#f6f7f3;--card:#fff;--ink:#14170f;--mut:#5c6356;--line:#e3e6dd;--acc:#2f6f2a;--acc2:#e9f2e4;--on:#fff;--bad:#c0392b;--warn:#b9770e}
+@media(prefers-color-scheme:dark){:root{--bg:#0d100c;--card:#151a14;--ink:#eef1ea;--mut:#a2aa9b;--line:#262d23;--acc:#8fd16a;--acc2:#1b2617;--on:#0d100c;--bad:#ef6f5e;--warn:#e3a23f}}
+[hidden]{display:none!important}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+.top{border-bottom:1px solid var(--line);background:var(--card)}.top div{max-width:1000px;margin:0 auto;padding:14px 16px;display:flex;align-items:center;gap:10px;justify-content:space-between}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;letter-spacing:-.01em}.brand svg{width:28px;height:28px;color:var(--acc)}
+.top a{color:var(--mut);font-size:14px;text-decoration:none}.top a:hover{color:var(--ink)}
+main{max-width:1000px;margin:0 auto;padding:32px 16px 56px}h1{margin:0;font-size:clamp(26px,4vw,34px);letter-spacing:-.02em}p.lead{color:var(--mut);margin:6px 0 22px;max-width:62ch}
+form,.box{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:20px;display:grid;gap:14px;margin-top:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+label{font-size:13px;font-weight:600;color:var(--mut);display:grid;gap:6px;text-transform:uppercase;letter-spacing:.04em}
+input,select,textarea{font:inherit;text-transform:none;letter-spacing:0;font-weight:400;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--acc);outline-offset:1px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:end}.row label{flex:1 1 170px}
+button{font:inherit;font-weight:600;padding:12px 24px;border:0;border-radius:999px;background:var(--acc);color:var(--on);cursor:pointer}button:hover{filter:brightness(1.05)}button:disabled{opacity:.55;cursor:not-allowed}
+.note{margin:0;font-size:13px;color:var(--mut)}.err{color:var(--bad)}.warn{color:var(--warn)}.mut{color:var(--mut)}
+iframe{width:100%;height:82vh;border:1px solid var(--line);border-radius:18px;margin-top:18px;background:var(--card)}
+footer.site{max-width:1000px;margin:0 auto;padding:0 16px 32px;font-size:13px;color:var(--mut)}footer.site a{color:inherit}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}button{font:inherit;font-weight:600;padding:12px 22px;border:0;border-radius:999px;background:var(--acc);color:var(--on);cursor:pointer}
 button:disabled{opacity:.6;cursor:progress}.err{color:var(--bad)}#hist{margin-top:14px;font-size:14px;color:var(--mut)}#hist button{background:none;color:var(--acc);padding:0;font-weight:500}
-iframe{width:100%;height:80vh;border:1px solid var(--line);border-radius:16px;margin-top:18px;background:var(--card)}
-</style></head><body><main>
-<h1>launchcheck</h1><p class="mut">A passive security check for your website and project folder: exposed keys, missing headers, open CORS, weak CSP, vulnerable packages.</p>
+</style></head><body><header class="top"><div><span class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg>launchcheck</span><a href="https://github.com/NiharPatel2545/launchcheck" target="_blank" rel="noopener">GitHub</a></div></header><main>
+<h1>Is your site safe to launch?</h1><p class="lead">A passive security check for your website and project folder: exposed keys, missing headers, open CORS, weak CSP, vulnerable packages.</p>
 <form id="f"><label>Website<input id="url" placeholder="https://yoursite.com" autocomplete="url"></label>
 <label>Project folder on this computer (optional)<input id="repo" placeholder="C:\\path\\to\\your\\project"></label>
 <div class="row"><button id="go">Run the check</button><span id="st" aria-live="polite"></span></div>
-<p style="margin:0;font-size:13px;color:var(--mut)">Only check sites and code you own or have permission to test. Nothing is attacked: it makes the requests a normal visitor's browser makes.</p></form>
+<p class="note">Only check sites and code you own or have permission to test. Nothing is attacked: it makes the requests a normal visitor's browser makes.</p></form>
 <div id="hist"></div><iframe id="out" title="Report" hidden></iframe>
 <script>
 const $ = s => document.querySelector(s), esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c])
@@ -84,7 +93,7 @@ $('#f').addEventListener('submit', async e => { e.preventDefault(); const b = $(
     $('#out').srcdoc = d.html; $('#out').hidden = false; hist()
   } catch(err) { $('#st').className = 'err'; $('#st').textContent = err.message } finally { b.disabled = false } })
 hist()
-</script></main></body></html>"""
+</script></main><footer class="site">launchcheck · open source · runs on your computer only</footer></body></html>"""
 
 
 def serve(port: int = 8710) -> None:

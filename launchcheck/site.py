@@ -11,7 +11,7 @@ import requests
 from launchcheck.findings import Finding
 from launchcheck.secrets import scan_text
 
-UA = "launchcheck/0.1 (passive security check; +https://github.com/)"
+UA = "launchcheck/0.1 (passive security check; +https://github.com/NiharPatel2545/launchcheck)"
 TIMEOUT = 15
 MAX_SCRIPTS = 30
 MAX_BYTES = 3_000_000

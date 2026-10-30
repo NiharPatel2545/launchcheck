@@ -5,15 +5,17 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 import requests
 
+from launchcheck.codecheck import check_code, check_config
 from launchcheck.findings import Finding
 from launchcheck.secrets import scan_text
 
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "env", "__pycache__", "dist", "build", ".next", ".cache", "site-packages"}
-TEXT_EXT = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".json", ".env", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".txt",
+TEXT_EXT = {".rules", ".sql", ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".json", ".env", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".txt",
             ".md", ".html", ".vue", ".svelte", ".sh", ".ps1", ".rb", ".go", ".php", ".java", ".kt", ".cs", ".config", ".xml", ""}
 MAX_FILE = 2_000_000
 OSV_URL = "https://api.osv.dev/v1/querybatch"
@@ -35,9 +37,19 @@ def _files(repo: Path):
             yield p
 
 
+def _committable(repo: Path):
+    """Files git tracks or would add (ignored files such as a local .env are skipped); every file when it is not a git repo."""
+    listed = _git(repo, "ls-files", "-co", "--exclude-standard")
+    if listed is None:
+        yield from _files(repo)
+        return
+    keep = {repo / f for f in listed.splitlines()}
+    yield from (p for p in _files(repo) if p in keep)
+
+
 def check_secrets(repo: Path) -> list[Finding]:
     out = []
-    for p in _files(repo):
+    for p in _committable(repo):
         try:
             text = p.read_text("utf-8", errors="replace")
         except OSError:
@@ -57,7 +69,8 @@ def check_env_files(repo: Path) -> list[Finding]:
                                    "Environment files hold your keys and passwords. Committed, they are in every clone and in history forever.",
                                    f"Rotate every key in it, then: git rm --cached {f}, add .env* to .gitignore, and commit a .env.example "
                                    "with blank values instead.", f))
-        hist = _git(repo, "log", "-p", "--all", "-n", "300", "--no-color")
+        excludes = [f":(exclude,glob)**/{d}/**" for d in SKIP_DIRS if d != ".git"]      # vendored libraries ship example keys
+        hist = _git(repo, "log", "-p", "--all", "-n", "300", "--no-color", "--", ".", *excludes)
         if hist:
             current = {(f.id, f.evidence) for f in check_secrets(repo)}
             for f in scan_text(hist, "git history", public=False):
@@ -90,6 +103,14 @@ def _deps(repo: Path) -> list[tuple[str, str, str, str]]:
                     out.append(("npm", path.split("node_modules/")[-1], meta["version"], "package-lock.json"))
         except (ValueError, OSError):
             pass
+    elif (repo / "yarn.lock").exists():               # yarn v1 and berry: a "name@range" header, then its version line
+        for m in re.finditer(r'^"?(@?[^@\s"]+)@[^\n]*:\n(?:\s+[^\n]*\n)*?\s+version:?\s+"?([0-9][^"\s]*)"?',
+                             (repo / "yarn.lock").read_text("utf-8", "replace"), re.M):
+            out.append(("npm", m.group(1), m.group(2), "yarn.lock"))
+    elif (repo / "pnpm-lock.yaml").exists():
+        for m in re.finditer(r"^\s{2}/?'?(@?[^@\s'/]+(?:/[^@\s']+)?)@(\d+\.\d+\.\d+[^:('\s]*)'?:",
+                             (repo / "pnpm-lock.yaml").read_text("utf-8", "replace"), re.M):
+            out.append(("npm", m.group(1), m.group(2), "pnpm-lock.yaml"))
     elif (repo / "package.json").exists():
         try:
             data = json.loads((repo / "package.json").read_text("utf-8"))
@@ -97,6 +118,37 @@ def _deps(repo: Path) -> list[tuple[str, str, str, str]]:
                 if re.fullmatch(r"\d+\.\d+\.\d+", str(ver)):
                     out.append(("npm", name, ver, "package.json"))
         except (ValueError, OSError):
+            pass
+    for name, eco in (("poetry.lock", "PyPI"), ("uv.lock", "PyPI"), ("Cargo.lock", "crates.io")):
+        f = repo / name
+        if f.exists():
+            try:
+                for pkg in tomllib.loads(f.read_text("utf-8")).get("package", []):
+                    if pkg.get("name") and pkg.get("version"):
+                        out.append((eco, pkg["name"], pkg["version"], name))
+            except (tomllib.TOMLDecodeError, OSError):
+                pass
+    if (repo / "Pipfile.lock").exists():
+        try:
+            for name, meta in json.loads((repo / "Pipfile.lock").read_text("utf-8")).get("default", {}).items():
+                if str(meta.get("version", "")).startswith("=="):
+                    out.append(("PyPI", name, meta["version"][2:], "Pipfile.lock"))
+        except (ValueError, OSError):
+            pass
+    if (repo / "go.sum").exists():
+        seen = set()
+        for m in re.finditer(r"^(\S+) (v[^\s/]+?)(?:/go\.mod)? h1:", (repo / "go.sum").read_text("utf-8", "replace"), re.M):
+            if m.groups() not in seen:
+                seen.add(m.groups()); out.append(("Go", m.group(1), m.group(2), "go.sum"))
+    if (repo / "Gemfile.lock").exists():
+        specs = (repo / "Gemfile.lock").read_text("utf-8", "replace")
+        for m in re.finditer(r"^    ([\w.-]+) \(([\d.]+)\)$", specs, re.M):
+            out.append(("RubyGems", m.group(1), m.group(2), "Gemfile.lock"))
+    if (repo / "composer.lock").exists():
+        try:
+            for pkg in json.loads((repo / "composer.lock").read_text("utf-8")).get("packages", []):
+                out.append(("Packagist", pkg["name"], str(pkg["version"]).lstrip("v"), "composer.lock"))
+        except (ValueError, OSError, KeyError):
             pass
     return out
 
@@ -126,7 +178,9 @@ def check_dependencies(repo: Path, query=osv_query) -> list[Finding]:
     out = []
     for (eco, name, ver, file), vulns in zip(deps, results):
         if vulns:
-            fix = f"pip install -U {name}  (then update {file})" if eco == "PyPI" else f"npm install {name}@latest"
+            fix = {"PyPI": f"pip install -U {name}  (then update {file})", "npm": f"npm install {name}@latest",
+                   "crates.io": f"cargo update -p {name}", "Go": f"go get -u {name}", "RubyGems": f"bundle update {name}",
+                   "Packagist": f"composer update {name}"}.get(eco, f"upgrade {name}")
             out.append(Finding("vulnerable-dependency", f"{name} {ver} has {len(vulns)} known vulnerabilit{'y' if len(vulns) == 1 else 'ies'}",
                                "high" if len(vulns) >= 3 else "medium",
                                "Published vulnerabilities come with public exploit details; bots scan for apps running old versions.",
@@ -140,4 +194,6 @@ def check_repo(path: str, query=osv_query) -> tuple[list[Finding], dict]:
     if not repo.is_dir():
         return [Finding("repo-missing", "Project folder not found", "info", f"{repo} is not a folder.", "Check the path.", str(repo))], {}
     deps = _deps(repo)
-    return check_secrets(repo) + check_env_files(repo) + check_dependencies(repo, query), {"repo": str(repo), "dependencies_checked": len(deps)}
+    findings = (check_secrets(repo) + check_env_files(repo) + check_dependencies(repo, query)
+                + check_code(repo, _committable(repo)) + check_config(repo))
+    return findings, {"repo": str(repo), "dependencies_checked": len(deps)}

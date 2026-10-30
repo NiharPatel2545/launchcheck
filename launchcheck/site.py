@@ -11,6 +11,29 @@ import requests
 from launchcheck.findings import Finding
 from launchcheck.secrets import scan_text
 
+LIB_URL = [                                     # library name and version from common CDN addresses
+    re.compile(r"/(?:npm/)?(@?[\w.-]+(?:/[\w.-]+)?)@(\d+\.\d+\.\d+)"),                      # jsdelivr, unpkg
+    re.compile(r"/ajax/libs/([\w.-]+)/(\d+\.\d+\.\d+)/"),                                  # cdnjs
+    re.compile(r"code\.jquery\.com/(jquery)-(\d+\.\d+\.\d+)"),
+]
+HEAD = r"(?:/\*!?|^[ \t]*\*)[ \t]*"            # a library's own header comment line
+LIB_BANNER = [                                  # version banners that libraries keep in their minified files
+    ("jquery", re.compile(HEAD + r"jQuery (?:JavaScript Library )?v(\d+\.\d+\.\d+)", re.M)),
+    ("bootstrap", re.compile(HEAD + r"Bootstrap v(\d+\.\d+\.\d+)", re.M)),
+    ("angular", re.compile(HEAD + r"AngularJS v(1\.\d+\.\d+)", re.M)),
+    ("lodash", re.compile(HEAD + r"(?:@license\s+)?Lodash (?:<https://lodash\.com/>\s+)?v?(\d+\.\d+\.\d+)|" + HEAD + r"lodash(?:\.min)?\.js v?(\d+\.\d+\.\d+)", re.M | re.I)),
+    ("moment", re.compile(r"^//! moment\.js\s*\n//! version : (\d+\.\d+\.\d+)", re.M)),
+    ("handlebars", re.compile(HEAD + r"handlebars v(\d+\.\d+\.\d+)", re.M | re.I)),
+    ("dompurify", re.compile(HEAD + r"@license DOMPurify (\d+\.\d+\.\d+)", re.M)),
+]
+DYNAMIC_HOSTS = ("googletagmanager.com", "google-analytics.com", "js.stripe.com", "maps.googleapis.com", "www.google.com",
+                 "www.gstatic.com", "challenges.cloudflare.com", "static.cloudflareinsights.com", "connect.facebook.net",
+                 "fonts.googleapis.com", "js.hs-scripts.com", "plausible.io", "cdn.cookielaw.org", "hcaptcha.com", "paypal.com",
+                 "clerk.com", "accounts.dev", "posthog.com", "intercom.io", "intercomcdn.com", "crisp.chat")
+CDN_NAMES = {"jquery": "jquery", "twitter-bootstrap": "bootstrap", "angular.js": "angular", "lodash.js": "lodash", "moment.js": "moment"}
+PRIVATE_IP = re.compile(r"(?<![\d.])(?:10\.(?:25[0-5]|2[0-4]\d|1?\d?\d)|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)(?![\d.])")
+LLM_FROM_BROWSER = re.compile(r"api\.openai\.com/v1|api\.anthropic\.com/v1|anthropic-dangerous-direct-browser-access|dangerouslyAllowBrowser\s*:\s*!?0?true|generativelanguage\.googleapis\.com/v1|api\.groq\.com/openai")
+
 UA = "launchcheck/0.1 (passive security check; +https://github.com/NiharPatel2545/launchcheck)"
 TIMEOUT = 15
 MAX_SCRIPTS = 30
@@ -24,11 +47,19 @@ class _Page(HTMLParser):
     def __init__(self):
         super().__init__()
         self.scripts, self.resources, self.meta_csp = [], [], []
+        self.sri, self.forms, self.passwords = [], [], 0       # (src, has integrity) for scripts and stylesheets; form actions
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag == "script" and a.get("src"):
             self.scripts.append(a["src"])
+            self.sri.append((a["src"], bool(a.get("integrity"))))
+        if tag == "link" and a.get("href") and "stylesheet" in (a.get("rel") or ""):
+            self.sri.append((a["href"], bool(a.get("integrity"))))
+        if tag == "form":
+            self.forms.append(a.get("action") or "")
+        if tag == "input" and (a.get("type") or "").lower() == "password":
+            self.passwords += 1
         if tag in ("script", "img", "iframe", "audio", "video", "source") and a.get("src"):
             self.resources.append((tag, a["src"]))
         if tag == "link" and a.get("href") and "stylesheet" in (a.get("rel") or ""):
@@ -96,7 +127,81 @@ def check_csp(policies: list[str], where: str) -> list[Finding]:
     return out
 
 
-def check_site(url: str, session: requests.Session | None = None) -> tuple[list[Finding], dict]:
+def libraries(urls: list[str], bodies: list[str]) -> set[tuple[str, str]]:
+    """(npm name, version) of well-known front-end libraries seen in script addresses or file banners."""
+    found = set()
+    for u in urls:
+        for rx in LIB_URL:
+            m = rx.search(u)
+            if m:
+                found.add((CDN_NAMES.get(m.group(1), m.group(1)), m.group(2)))
+                break
+    for b in bodies:
+        for name, rx in LIB_BANNER:
+            m = rx.search(b[:300_000])
+            if m:
+                found.add((name, next(g for g in m.groups() if g)))
+    return found
+
+
+def check_libraries(urls: list[str], bodies: list[str], where: str, query=None) -> list[Finding]:
+    libs = sorted(libraries(urls, bodies))
+    if not libs:
+        return []
+    from launchcheck.repo import osv_query
+    try:
+        ids = (query or osv_query)([("npm", n, v, where) for n, v in libs])
+    except Exception:
+        return []
+    return [Finding("vulnerable-library", f"{n} {v} in the page has {len(vs)} known vulnerabilit{'y' if len(vs) == 1 else 'ies'}",
+                    "high" if len(vs) >= 3 else "medium",
+                    "Old front-end libraries have public exploits (often cross-site scripting) that work on any site still loading them.",
+                    f"Upgrade {n} to its latest version and redeploy. Details: " + ", ".join(f"https://osv.dev/vulnerability/{x}" for x in vs[:3]),
+                    where, ", ".join(vs[:6])) for (n, v), vs in zip(libs, ids) if vs]
+
+
+def check_page(final: str, html: str, page: _Page, bodies: list[str]) -> list[Finding]:
+    """Checks on what the page itself contains: forms, outside scripts without integrity hashes, internal addresses,
+    calls to AI providers straight from the browser."""
+    out = []
+    u = urlparse(final)
+    host, https = u.hostname, u.scheme == "https"
+    from launchcheck.dnsmail import registrable
+    missing = []
+    for src, has_sri in page.sri:
+        full = urljoin(final, src)
+        h = urlparse(full).hostname
+        if (h and h != host and urlparse(full).scheme in ("http", "https") and not has_sri and not full.split("?")[0].endswith(".css")
+                and not h.endswith(DYNAMIC_HOSTS) and registrable(h) != registrable(host or "")):
+            missing.append(full)
+    if missing:
+        out.append(Finding("sri-missing", f"{len(missing)} outside script{'s' if len(missing) > 1 else ''} loaded without an integrity hash", "low",
+                           "If that CDN or host is ever hacked, the changed file runs on your site with full access to your visitors.",
+                           'Add integrity="sha384-..." crossorigin="anonymous" to each tag (cdnjs and jsdelivr show the hash), '
+                           "or host the files yourself. Scripts that change by design (analytics, Stripe, reCAPTCHA) can't take a hash.",
+                           final, ", ".join(missing[:3]) + (" …" if len(missing) > 3 else "")))
+    for action in page.forms:
+        if action.startswith("http://"):
+            out.append(Finding("form-insecure", "A form sends its data over plain HTTP", "high" if page.passwords else "medium",
+                               "Whatever is typed into it travels unencrypted.", "Point the form's action at an https:// address.", final, action))
+    if page.passwords and not https and not _local(host or ""):
+        out.append(Finding("password-over-http", "Password field on a page without HTTPS", "high",
+                           "Passwords typed here can be read by anyone on the same network.", "Serve the page over HTTPS.", final))
+    ips = sorted(set(PRIVATE_IP.findall(html + "\n".join(bodies))))
+    if ips:
+        out.append(Finding("internal-address", "Internal network addresses in the page or its scripts", "low",
+                           "Private IP addresses reveal how your internal network is laid out, which helps an attacker who gets a foothold.",
+                           "Remove internal addresses and debug settings from the production build.", final, ", ".join(ips[:5])))
+    if any(LLM_FROM_BROWSER.search(b) for b in [html, *bodies]):
+        out.append(Finding("llm-from-browser", "The browser calls an AI provider directly", "high",
+                           "Calling OpenAI, Anthropic, Google or Groq from browser code means the API key is in the browser too: anyone "
+                           "can copy it and run up your bill.",
+                           "Call the AI provider from your own backend (a server route or edge function) that holds the key, and have "
+                           "the browser call that route, with a per-user rate limit.", final))
+    return out
+
+
+def check_site(url: str, session: requests.Session | None = None, query=None, deep: bool = False) -> tuple[list[Finding], dict]:
     s = session or requests.Session()
     out: list[Finding] = []
     info: dict = {"url": url}
@@ -219,7 +324,7 @@ def check_site(url: str, session: requests.Session | None = None) -> tuple[list[
     # secrets in what the browser downloads
     out += scan_text(html, final, public=True)
     host = u.hostname
-    scanned = 0
+    scanned, bodies = 0, []
     # script tags, then ES module imports found in the page and in each bundle (Vite/Next/plain modules load code this way)
     queue = [urljoin(final, src) for src in page.scripts] + [urljoin(final, m) for m in IMPORT.findall(html)]
     done: set[str] = set()
@@ -235,10 +340,37 @@ def check_site(url: str, session: requests.Session | None = None) -> tuple[list[
         except Exception:
             continue
         queue += [urljoin(full, m) for m in IMPORT.findall(body)]
+        bodies.append(body)
         out += scan_text(body, full, public=True)
         if re.search(r"//# sourceMappingURL=(?!data:)", body):
             out.append(Finding("source-map", "JavaScript source maps are linked", "info",
                                "Source maps let anyone read your original front-end source. Fine if it holds no secrets; some teams prefer not to publish them.",
                                "Do not deploy .map files, or restrict them, if you do not want the source public.", full))
     info["scripts_scanned"] = scanned
+    out += check_page(final, html, page, bodies)
+    out += check_libraries([urljoin(final, x) for x in page.scripts], bodies, final, query)
+    out += _security_txt(s, final)
+    if deep:                                       # only on a site the user has proved is theirs
+        from launchcheck.verified import check_verified, how_to_verify, is_verified
+        verified = is_verified(final, s)
+        info["verified_owner"] = verified
+        out += check_verified(final, s) if verified else [how_to_verify(final)]
+    if https and not _local(host or ""):
+        from launchcheck.dnsmail import check_domain
+        from launchcheck.tls import check_tls
+        out += check_tls(host, u.port or 443) + check_domain(host)
     return out, info
+
+
+def _security_txt(s, final: str) -> list[Finding]:
+    """security.txt (RFC 9116) is a public file meant to be fetched: it says where to report a security problem."""
+    try:
+        r = _get(s, urljoin(final, "/.well-known/security.txt"), allow_redirects=True)
+        if r.status_code == 200 and "contact:" in r.text.lower() and "<html" not in r.text[:500].lower():
+            return []
+    except requests.RequestException:
+        return []
+    return [Finding("security-txt-missing", "No security.txt", "info",
+                    "People who find a security problem have no clear way to tell you, so reports go nowhere or go public.",
+                    "Publish /.well-known/security.txt with at least:\nContact: mailto:security@yourdomain.com\n"
+                    "Expires: 2027-12-31T00:00:00.000Z", urljoin(final, "/.well-known/security.txt"))]

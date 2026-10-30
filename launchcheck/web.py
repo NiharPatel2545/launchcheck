@@ -20,8 +20,10 @@ SCANS: dict[str, dict] = {}          # recent scans this session, for the PDF do
 
 # what the page lists, and which finding ids belong to each row ("site" rows need a URL, "repo" rows a folder)
 CHECKS = [
-    ("secrets", "Keys in public code", "API keys, tokens and private keys a visitor's browser can read", "both", ("secret-",)),
+    ("secrets", "Keys in public code", "API keys, tokens, database passwords and private keys", "both", ("secret-", "public-env-secret")),
     ("https", "HTTPS", "Encrypted connection, and http:// sent on to https://", "site", ("no-https",)),
+    ("tls", "Certificate and TLS", "Valid certificate, not expiring, no old TLS 1.0/1.1", "site", ("tls-",)),
+    ("email", "Email spoofing", "SPF and DMARC stop fake mail in your name", "site", ("email-", "dns-")),
     ("hsts", "Strict transport", "Browsers told to always use HTTPS", "site", ("hsts-",)),
     ("csp", "Content-Security-Policy", "Injected scripts blocked", "site", ("csp-",)),
     ("framing", "Clickjacking", "Other sites cannot frame your pages", "site", ("framing-",)),
@@ -29,16 +31,23 @@ CHECKS = [
     ("cookies", "Cookie flags", "Secure, HttpOnly and SameSite on cookies", "site", ("cookie-",)),
     ("cors", "Cross-site access", "CORS does not let any website read your data", "site", ("cors-",)),
     ("mixed", "Mixed content", "Nothing loaded over plain HTTP", "site", ("mixed-content",)),
-    ("versions", "Version leaks", "Server versions and source maps", "site", ("version-", "source-map")),
+    ("versions", "Version leaks", "Server versions, source maps, internal addresses", "site", ("version-", "source-map", "internal-address")),
+    ("scripts", "Outside scripts", "Old libraries with known holes, scripts without integrity hashes", "site", ("vulnerable-library", "sri-")),
+    ("forms", "Forms", "Logins and forms only over HTTPS", "site", ("form-", "password-over-http")),
+    ("ai", "AI keys", "AI providers called only from your server, never the browser", "both", ("llm-from-browser", "ai-browser-key")),
+    ("contact", "security.txt", "A published way to report security problems", "site", ("security-txt",)),
+    ("exposed", "Exposed files (deep)", "No .git, .env, backups, folder listings or open redirects", "deep", ("exposed-file", "directory-listing", "admin-exposed", "open-redirect", "verify-to-unlock")),
     ("env", ".env files", "Secrets files kept out of git", "repo", ("env-",)),
-    ("deps", "Vulnerable packages", "Dependencies with published vulnerabilities", "repo", ("vulnerable-dependency", "osv-")),
+    ("deps", "Vulnerable packages", "Dependencies with published vulnerabilities, every major language", "repo", ("vulnerable-dependency", "osv-")),
+    ("code", "Risky code", "SQL injection, eval, shell commands, unsafe loading, TLS checks off", "repo", ("code-",)),
+    ("config", "Config files", "Docker, GitHub Actions, Firebase rules, Supabase Row Level Security", "repo", ("docker-", "gha-", "firebase-", "supabase-no-rls")),
 ]
 
 
-def check_rows(findings: list[dict], has_site: bool, has_repo: bool) -> list[dict]:
+def check_rows(findings: list[dict], has_site: bool, has_repo: bool, deep: bool = False) -> list[dict]:
     rows = []
     for key, name, desc, scope, prefixes in CHECKS:
-        if (scope == "site" and not has_site) or (scope == "repo" and not has_repo):
+        if (scope in ("site", "deep") and not has_site) or (scope == "repo" and not has_repo) or (scope == "deep" and not deep):
             rows.append({"key": key, "status": "skip"})
             continue
         sev = {f["severity"] for f in findings if f["id"].startswith(prefixes)}
@@ -49,6 +58,7 @@ def check_rows(findings: list[dict], has_site: bool, has_repo: bool) -> list[dic
 class ScanRequest(BaseModel):
     url: str = Field("", max_length=2000)
     repo: str = Field("", max_length=500)
+    deep: bool = False
 
 
 @app.post("/api/scan")
@@ -62,7 +72,7 @@ async def scan(req: ScanRequest) -> dict:
             raise HTTPException(422, "That does not look like a website address.")
     findings, info = [], {}
     if url:
-        f, i = await asyncio.to_thread(check_site, url)
+        f, i = await asyncio.to_thread(check_site, url, None, None, req.deep)
         findings += f; info["site"] = i
     if repo:
         f, i = await asyncio.to_thread(check_repo, repo)
@@ -73,7 +83,7 @@ async def scan(req: ScanRequest) -> dict:
     for old in list(SCANS)[:-20]:
         SCANS.pop(old, None)
     return {"id": sid, "target": data["target"], "score": data["score"], "grade": data["grade"], "counts": data["counts"],
-            "checked_at": data["checked_at"], "findings": data["findings"], "checks": check_rows(data["findings"], bool(url), bool(repo))}
+            "checked_at": data["checked_at"], "findings": data["findings"], "checks": check_rows(data["findings"], bool(url), bool(repo), req.deep)}
 
 
 @app.get("/api/scan/{sid}/pdf")
@@ -116,6 +126,7 @@ h1{font-size:clamp(44px,6.2vw,84px);line-height:.94;letter-spacing:-.045em;margi
 .bar button:hover{opacity:.88}.bar button:active{opacity:.75}.bar button:disabled{opacity:.5;cursor:progress}
 .bar:focus-within{outline:3px solid color-mix(in srgb,var(--pass) 45%,transparent);outline-offset:2px}
 details{margin-top:18px;font-size:15px;color:var(--mut)}summary{cursor:pointer;width:max-content}summary:hover{color:var(--ink)}
+.deep{display:flex;gap:10px;align-items:center;margin-top:14px;font-size:15px;color:var(--mut);cursor:pointer}.deep input{width:18px;height:18px;accent-color:var(--ink)}
 details input{display:block;width:100%;margin-top:10px;padding:13px 14px;border:1px solid var(--line);border-radius:4px;background:var(--surface);font-size:16px}
 .fine{font-size:14px;color:var(--mut);margin:22px 0 0;max-width:52ch}.err{color:var(--fail);font-weight:600}
 .list{background:var(--surface);border-radius:6px;padding:10px 0}
@@ -160,6 +171,7 @@ footer{padding:40px 0 48px;color:var(--mut);font-size:14px}
 <p class="lead">Paste your site. In about ten seconds you get every exposed key, missing header and leaky setting, with the fix for each.</p>
 <form id="f"><div class="bar"><label for="url" class="sr">Website address</label><input id="url" placeholder="yoursite.com" autocomplete="url" inputmode="url"><button id="go">Check site</button></div>
 <details><summary>Also check a project folder on this computer</summary><label for="repo" class="sr">Project folder</label><input id="repo" placeholder="C:\path\to\your\project"></details>
+<label class="deep"><input type="checkbox" id="deep"> Deeper checks on a site I own (exposed files, admin pages, open redirects)</label>
 <p id="st" class="fine" aria-live="polite">Passive only: it makes the requests a normal visitor's browser makes and never attacks anything. Check sites and code you own.</p></form></div>
 <div class="list" id="checks"><h2>What gets checked</h2><div id="rows"></div></div></section></div>
 <section class="res" id="res" hidden><div class="wrap"><div class="sum"><div class="score" id="score"></div><div><h2 id="verdict"></h2><div class="counts" id="counts"></div></div>
@@ -186,8 +198,8 @@ function render(d){
 $('#f').addEventListener('submit', async e => { e.preventDefault(); const url = $('#url').value.trim(), repo = $('#repo').value.trim(), b = $('#go'), st = $('#st')
   if (!url && !repo) { st.className = 'fine err'; st.textContent = 'Paste a website address, or open the folder option.'; return }
   b.disabled = true; st.className = 'fine'; st.textContent = 'Checking… about ten seconds.'
-  CHECKS.forEach(c => setRow(c.key, (c.scope === 'site' && !url) || (c.scope === 'repo' && !repo) ? 'skip' : 'checking'))
-  try { const r = await fetch('/api/scan', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url, repo})}), d = await r.json()
+  CHECKS.forEach(c => setRow(c.key, ((c.scope === 'site' || c.scope === 'deep') && !url) || (c.scope === 'repo' && !repo) || (c.scope === 'deep' && !$('#deep').checked) ? 'skip' : 'checking'))
+  try { const r = await fetch('/api/scan', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url, repo, deep: $('#deep').checked})}), d = await r.json()
     if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : 'The check failed.')
     d.checks.forEach((c, i) => setTimeout(() => setRow(c.key, c.status), 90 * i))
     setTimeout(() => { render(d); st.textContent = `Checked ${d.target} at ${d.checked_at}.` }, 90 * d.checks.length + 250)

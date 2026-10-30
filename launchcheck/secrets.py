@@ -16,8 +16,27 @@ PATTERNS = [
     ("stripe-secret", "Stripe secret key", r"\b(?:sk|rk)_live_[0-9a-zA-Z]{20,}", "high"),
     ("github-token", "GitHub token", r"\bgh[pousr]_[A-Za-z0-9]{36,}\b", "high"),
     ("slack-token", "Slack token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}", "high"),
-    ("private-key", "Private key", r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----", "high"),
+    ("private-key", "Private key", r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----(?:\\[rn]|[\s+\"'])+[A-Za-z0-9+/=]{40,}", "high"),
     ("google-api-key", "Google API key", r"\bAIza[0-9A-Za-z_\-]{35}\b", "low"),
+    ("google-oauth-secret", "Google OAuth client secret", r"\bGOCSPX-[A-Za-z0-9_\-]{28}\b", "high"),
+    ("gitlab-token", "GitLab token", r"\bglpat-[A-Za-z0-9_\-]{20,}\b", "high"),
+    ("huggingface-token", "Hugging Face token", r"\bhf_[A-Za-z]{34}\b", "high"),
+    ("npm-token", "npm token", r"\bnpm_[A-Za-z0-9]{36}\b", "high"),
+    ("pypi-token", "PyPI token", r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_\-]{50,}", "high"),
+    ("sendgrid-key", "SendGrid API key", r"\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b", "high"),
+    ("mailgun-key", "Mailgun API key", r"\bkey-[0-9a-f]{32}\b", "high"),
+    ("twilio-key", "Twilio API key", r"\bSK[0-9a-f]{32}\b", "high"),
+    ("telegram-token", "Telegram bot token", r"\b\d{8,10}:AA[A-Za-z0-9_\-]{33}\b", "high"),
+    ("digitalocean-token", "DigitalOcean token", r"\bdo[opr]_v1_[a-f0-9]{64}\b", "high"),
+    ("shopify-token", "Shopify access token", r"\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b", "high"),
+    ("groq-key", "Groq API key", r"\bgsk_[A-Za-z0-9]{52}\b", "high"),
+    ("replicate-token", "Replicate API token", r"\br8_[A-Za-z0-9]{37}\b", "high"),
+    ("stripe-webhook-secret", "Stripe webhook secret", r"\bwhsec_[A-Za-z0-9]{32,}\b", "high"),
+    ("azure-storage-key", "Azure storage account key", r"AccountKey=[A-Za-z0-9+/]{86}==", "high"),
+    # database address with a real-looking password (not localhost, not a placeholder)
+    ("database-url", "Database address with password",
+     r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss)://[^\s:@/'\"]+:(?!password\b|pass\b|secret\b|changeme\b|postgres\b|\$\{|<)[^\s@/'\"]{6,}@(?!(?:localhost|127\.0\.0\.1|db|postgres|mysql|redis|mongo)(?:[:/\s'\"]|$))[^\s/'\"]+",
+     "high"),
 ]
 JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 _COMPILED = [(i, label, re.compile(rx), sev) for i, label, rx, sev in PATTERNS]

@@ -24,13 +24,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="launchcheck-report.html", help="HTML report path")
     ap.add_argument("--json", help="also write the results as JSON")
     ap.add_argument("--pdf", help="also write the report as a PDF")
+    ap.add_argument("--deep", action="store_true", help="also run owner-verified checks (exposed .git/.env, backups, admin pages, "
+                    "open redirects); needs proof you own the site, and prints how to give it")
     a = ap.parse_args(argv)
     if not a.url and not a.repo:
         ap.error("give a URL, --repo, or both")
     findings, info = [], {}
     if a.url:
         url = a.url if "://" in a.url else "https://" + a.url
-        f, i = check_site(url)
+        f, i = check_site(url, deep=a.deep)
         findings += f; info["site"] = i
     if a.repo:
         f, i = check_repo(a.repo)
